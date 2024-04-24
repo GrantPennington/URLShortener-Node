@@ -14,6 +14,9 @@ const urlMappingSchema = new mongoose.Schema({
         type: Date, 
         default: Date.now 
     },
+    expiration: {
+        type: Date,
+    },
 });
 
 const URLMap = mongoose.model('UrlMapping', urlMappingSchema);

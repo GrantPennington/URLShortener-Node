@@ -4,9 +4,18 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
 const ncp = require('node-clipboardy');
+const cron = require('node-cron');
+const https = require('https');
+
+/* Security Libraries */
+const expressDefend = require('express-defend');
+const blacklist = require('express-blacklist');
+const helmet = require('helmet');
+
 require('dotenv').config(); // environment variables
 
 const UrlMap = require('./models/urlMap');
+const ApiRateLimiter = require('./middleware/attempts.middleware');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -25,6 +34,28 @@ mongoose.connection.once('open', () => {
     console.error(err);
 });
 
+// middleware to set security headers
+app.use(helmet());
+// defense against malicious requests and xss attacks
+app.use(blacklist.blockRequests('blacklist.txt'));
+app.use(expressDefend.protect({ 
+    maxAttempts: 5, 
+    dropSuspiciousRequest: true, 
+    logFile: 'suspicious.log',
+    onMaxAttemptsReached: function(ipAddress, url){
+        blacklist.addAddress(ipAddress);
+    } 
+}));
+
+/* USE THIS LATER WHEN SWITCHING OVER TO HTTPS not LOCALHOST */
+// middleware to redirect HTTP to HTTPS
+// app.use((req,res,next) => {
+//     if(!req.secure) {
+//         return res.redirect('https://' + req.headers.host + req.url);
+//     }
+//     next();
+// });
+
 // middleware
 app.use(express.json());
 app.use(cors());
@@ -36,7 +67,7 @@ app.use('/api/v1/url-shortener', mapperRoutes)
 const { redirectUrl } = require('./controllers/mapper.controller');
 
 // get all url maps
-app.get('/', async (req, res) => {
+app.get('/', ApiRateLimiter, async (req, res) => {
     try {
         const maps = await UrlMap.find({});
         if(!maps) {
@@ -85,7 +116,7 @@ app.get('/', async (req, res) => {
     }
 });
 
-app.get('/create', (req, res) => {
+app.get('/create', ApiRateLimiter, (req, res) => {
     const html = `
     <a href="/">Back to Urls</a>
     <h2>Create Shortened URL </h2>
@@ -100,7 +131,7 @@ app.get('/create', (req, res) => {
     res.status(200).send(Buffer.from(html));
 });
 
-app.get('/copy-to-clipboard/:url', async (req, res) => {
+app.get('/copy-to-clipboard/:url', ApiRateLimiter, async (req, res) => {
     try {
         const url = req.params.url;
         ncp.write(`http://localhost:3001/${url}`);
@@ -112,7 +143,13 @@ app.get('/copy-to-clipboard/:url', async (req, res) => {
 });
 
 // redirect to longUrl
-app.get('/:shortCode', redirectUrl)
+app.get('/:shortCode', ApiRateLimiter, redirectUrl)
+
+// schedule database cleanup (every 24 hours)
+cron.schedule('0 0 * * *', async () => {
+    await UrlMap.deleteMany({ expiration: { $lt: new Date() } });
+    console.log('Database cleanup complete');
+});
 
 // start the server
 app.listen(PORT, () => {
